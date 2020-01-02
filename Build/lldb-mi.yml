@@ -1,5 +1,11 @@
 variables:
-  llvmTag: llvmorg-9.0.1
+  llvm_repo: https://github.com/llvm/llvm-project.git
+  llvm_branch: tags/llvmorg-9.0.1
+  llvm_build_type: Release
+  llvm_arch: x86_64
+  llvm_additional_parameters: "-DLLDB_RELOCATABLE_PYTHON=1 -DLLDB_INCLUDE_TESTS=OFF"
+  lldb_mi_repo: https://github.com/lldb-tools/lldb-mi
+  lldb_mi_branch: origin/master
 
 jobs:
 - job: LLDB_MI
@@ -7,16 +13,6 @@ jobs:
   pool:
     vmImage: 'macOS-latest'
   steps:
-  # - task: CmdLine@2
-  #   displayName: 'Install Homebrew'
-  #   inputs: 
-  #     script: mkdir homebrew && curl -L https://github.com/Homebrew/brew/tarball/master | tar xz --strip 1 -C homebrew
-
-  # - task: CmdLine@2
-  #   displayName: 'Update Homebrew'
-  #   inputs: 
-  #     script: brew update
-
   - task: CmdLine@2
     displayName: 'Install Dependencies'
     inputs: 
@@ -30,20 +26,20 @@ jobs:
         cd $(Build.StagingDirectory)
         mkdir $(Build.StagingDirectory)/buildspace
         
-        git clone https://github.com/llvm/llvm-project.git
+        git clone $(llvm_repo)
         cd llvm-project
-        git checkout tags/$(llvmTag)
+        git checkout $(llvm_branch)
 
         echo "##[command] ./lldb/scripts/macos-setup-codesign.sh"
 
         ./lldb/scripts/macos-setup-codesign.sh
 
         cd ..
-        mkdir $(Build.StagingDirectory)/llvm-inst
+        mkdir $(Build.StagingDirectory)/buildspace/llvm-inst
         mkdir $(Build.StagingDirectory)/llvm-build
         cd $(Build.StagingDirectory)/llvm-build
 
-        cmake -DLLVM_ENABLE_PROJECTS="clang;lldb" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$(Build.StagingDirectory)/buildspace/llvm-inst/ -DCMAKE_OSX_ARCHITECTURES="x86_64" -DLLDB_RELOCATABLE_PYTHON=1 -DLLDB_INCLUDE_TESTS=OFF -GNinja $(Build.StagingDirectory)/llvm-project/llvm
+        cmake -DLLVM_ENABLE_PROJECTS="clang;lldb" -DCMAKE_BUILD_TYPE=$(llvm_build_type) -DCMAKE_INSTALL_PREFIX=$(Build.StagingDirectory)/buildspace/llvm-inst/ -DCMAKE_OSX_ARCHITECTURES=$(llvm_arch) $(llvm_additional_parameters) -GNinja $(Build.StagingDirectory)/llvm-project/llvm
         if [[ $? -ne 0 ]]
         then
           echo "##[error] cmake llvm failed"
@@ -70,8 +66,9 @@ jobs:
         echo "##[section] Build LLDB-MI"
         # Download lldb-mi and build it against our custom installation.
         cd $(Build.StagingDirectory)/buildspace
-        git clone https://github.com/lldb-tools/lldb-mi
+        git clone $(lldb_mi_repo)
         cd lldb-mi
+        git checkout $(lldb_mi_branch)
 
         # Create a separate build directory for building lldb-mi.
         mkdir build
@@ -86,82 +83,43 @@ jobs:
         mkdir lib
 
         cp -r $(Build.StagingDirectory)/buildspace/llvm-inst/lib/python2.7 ./lib/.
-        cp $(Build.StagingDirectory)/buildspace/llvm-inst/lib/liblldb.dylib ./lib/.
-        cp $(Build.StagingDirectory)/buildspace/llvm-inst/bin/darwin-debug ./lib/.
-        cp $(Build.StagingDirectory)/buildspace/llvm-inst/bin/lldb-argdumper ./lib/.
-        cp $(Build.StagingDirectory)/buildspace/llvm-inst/bin/debugserver ./lib/.
+        cp $(Build.StagingDirectory)/buildspace/llvm-inst/lib/liblldb.*.dylib ./lib/.
+        cp $(Build.StagingDirectory)/buildspace/llvm-inst/bin/darwin-debug ./bin/.
+        cp $(Build.StagingDirectory)/buildspace/llvm-inst/bin/lldb-argdumper ./bin/.
+        cp $(Build.StagingDirectory)/buildspace/llvm-inst/bin/debugserver ./bin/.
         cp $(Build.StagingDirectory)/buildspace/lldb-mi/build/src/lldb-mi ./bin/.
+
+        # Set rpath for dylib
+        install_name_tool -add_rpath @executable_path/../lib ./bin/lldb-mi
+
+        zip -r ../lldb-mi.zip *
 
   - task: PublishPipelineArtifact@1
     displayName: 'Publish LLDB-MI'
     inputs:
-      targetPath: $(Build.StagingDirectory)/publish
+      targetPath: '$(Build.StagingDirectory)/lldb-mi.zip'
       artifactName: 'lldb-mi'
 
-#   - task: CmdLine@2
-#     displayName: 'Brew Install LLVM'
-#     inputs: 
-#       script: |
-#         brew install llvm@9 jq
+- job: SignFiles
+  dependsOn: LLDB_MI
+  pool:
+    name: 'MicroBuildV2Pool'
+  steps:
+  - task: DownloadPipelineArtifact@2
+    inputs:
+      source: 'current'
+      artifact: 'lldb-mi'
+      path: '$(Pipeline.Workspace)/signing'
 
-#   - task: CmdLine@2
-#     displayName: 'Build LLDB-MI'
-#     inputs: 
-#       script: |
-#         llvm_json=$(brew info --json llvm)
-#         echo "##[debug] llvm_json is $llvm_json"
-        
-#         llvm_version=$(echo $llvm_json | jq $_.[0].installed[0].version | tr -d '"')
-#         echo "##[debug] llvm_version is $llvm_version"
+  - task: ms-vseng.MicroBuildTasks.7973a23b-33e3-4b00-a7d9-c06d90f8297f.MicroBuildSignMacFiles@1
+    inputs:
+      SigningTarget: '$(Pipeline.Workspace)/signing/lldb-mi.zip'
+      SigningCert: '8003'
+      SigningPluginSource: 'https://devdiv.pkgs.visualstudio.com/DefaultCollection/_packaging/MicroBuildToolset/nuget/v3/index.json'
+      SigningPluginVersion: 'latest'
 
-#         git clone https://github.com/lldb-tools/lldb-mi
-#         cd lldb-mi
-
-#         mkdir build
-#         cd build
-
-#         cmake "-DCMAKE_PREFIX_PATH=/usr/local/Cellar/llvm/$llvm_version/lib/cmake/llvm/" -GNinja ..
-#         ninja
-
-#         mkdir $(Build.SourcesDirectory)/output
-#         cp $(Build.SourcesDirectory)/lldb-mi/build/src/lldb-mi $(Build.SourcesDirectory)/output
-#         cp /usr/local/Cellar/llvm/$llvm_version/lib/liblldb.* $(Build.SourcesDirectory)/output
-
-#         cd $(Build.SourcesDirectory)/output
-
-#         zip -r ../lldb-mi.zip *
-
-#   - task: PublishPipelineArtifact@1
-#     displayName: 'Publish LLDB-MI'
-#     inputs:
-#       targetPath: '$(Build.StagingDirectory)/lldb-mi.zip'
-#       artifactName: 'lldb-mi'
-
-# - job: SignFiles
-#   dependsOn: LLDB_MI
-#   pool:
-#     name: 'MicroBuildV2Pool'
-#   steps:
-#   - task: DownloadPipelineArtifact@2
-#     inputs:
-#       source: 'current'
-#       artifact: 'lldb-mi'
-#       path: '$(Pipeline.Workspace)/signing'
-
-#   - task: ms-vseng.MicroBuildTasks.30666190-6959-11e5-9f96-f56098202fef.MicroBuildSigningPlugin@2
-#     inputs:
-#       signType: 'test'
-#       feedSource: 'https://devdiv.pkgs.visualstudio.com/DefaultCollection/_packaging/MicroBuildToolset/nuget/v3/index.json'   
-
-#   - task: ms-vseng.MicroBuildTasks.7973a23b-33e3-4b00-a7d9-c06d90f8297f.MicroBuildSignMacFiles@1
-#     inputs:
-#       SigningTarget: '$(Pipeline.Workspace)/signing/lldb-mi.zip'
-#       SigningCert: '8003'
-#       SigningPluginSource: 'https://devdiv.pkgs.visualstudio.com/DefaultCollection/_packaging/MicroBuildToolset/nuget/v3/index.json'
-#       SigningPluginVersion: 'latest'
-
-#   - task: PublishPipelineArtifact@1
-#     displayName: 'Publish LLDB-MI'
-#     inputs:
-#       targetPath: '$(Build.SourcesDirectory)/lldb-mi.zip'
-#       artifactName: 'lldb-mi-signed'
+  - task: PublishPipelineArtifact@1
+    displayName: 'Publish LLDB-MI'
+    inputs:
+      targetPath: '$(Pipeline.Workspace)/signing/lldb-mi.zip'
+      artifactName: 'lldb-mi-signed'

@@ -3,9 +3,10 @@ variables:
   llvm_branch: tags/llvmorg-9.0.1
   llvm_build_type: Release
   llvm_arch: x86_64
-  llvm_additional_parameters: "-DLLDB_RELOCATABLE_PYTHON=1 -DLLDB_INCLUDE_TESTS=OFF"
+  llvm_additional_parameters: "-DLLDB_RELOCATABLE_PYTHON=1 -DLLDB_INCLUDE_TESTS=OFF -DLLDB_BUILD_FRAMEWORK=1"
   lldb_mi_repo: https://github.com/lldb-tools/lldb-mi
   lldb_mi_branch: origin/master
+  lldb_mi_additional_parameters: "-DUSE_LLDB_FRAMEWORK=1"
 
 jobs:
 - job: LLDB_MI
@@ -73,53 +74,45 @@ jobs:
         # Create a separate build directory for building lldb-mi.
         mkdir build
         cd build
-        cmake -DCMAKE_PREFIX_PATH=$(Build.StagingDirectory)/buildspace/llvm-inst/ -GNinja ..
+        cmake -DCMAKE_PREFIX_PATH=$(Build.StagingDirectory)/buildspace/llvm-inst/ $(lldb_mi_additional_parameters) -GNinja ..
         ninja
 
         mkdir $(Build.StagingDirectory)/publish
         cd $(Build.StagingDirectory)/publish
 
         mkdir bin
-        mkdir lib
 
-        cp -r $(Build.StagingDirectory)/buildspace/llvm-inst/lib/python2.7 ./lib/.
-        cp $(Build.StagingDirectory)/buildspace/llvm-inst/lib/liblldb.*.dylib ./lib/.
-        cp $(Build.StagingDirectory)/buildspace/llvm-inst/bin/darwin-debug ./bin/.
-        cp $(Build.StagingDirectory)/buildspace/llvm-inst/bin/lldb-argdumper ./bin/.
-        cp $(Build.StagingDirectory)/buildspace/llvm-inst/bin/debugserver ./bin/.
         cp $(Build.StagingDirectory)/buildspace/lldb-mi/build/src/lldb-mi ./bin/.
 
         # Set rpath for dylib
-        install_name_tool -add_rpath @executable_path/../lib ./bin/lldb-mi
-
-        zip -r ../lldb-mi.zip *
+        install_name_tool -add_rpath @rpath/LLDB.framework/Versions/A/LLDB ./bin/lldb-mi
 
   - task: PublishPipelineArtifact@1
     displayName: 'Publish LLDB-MI'
     inputs:
-      targetPath: '$(Build.StagingDirectory)/lldb-mi.zip'
+      targetPath: '$(Build.StagingDirectory)/publish/bin/lldb-mi'
       artifactName: 'lldb-mi'
 
-- job: SignFiles
-  dependsOn: LLDB_MI
-  pool:
-    name: 'MicroBuildV2Pool'
-  steps:
-  - task: DownloadPipelineArtifact@2
-    inputs:
-      source: 'current'
-      artifact: 'lldb-mi'
-      path: '$(Pipeline.Workspace)/signing'
+# - job: SignFiles
+#   dependsOn: LLDB_MI
+#   pool:
+#     name: 'MicroBuildV2Pool'
+#   steps:
+#   - task: DownloadPipelineArtifact@2
+#     inputs:
+#       source: 'current'
+#       artifact: 'lldb-mi'
+#       path: '$(Pipeline.Workspace)/signing'
 
-  - task: ms-vseng.MicroBuildTasks.7973a23b-33e3-4b00-a7d9-c06d90f8297f.MicroBuildSignMacFiles@1
-    inputs:
-      SigningTarget: '$(Pipeline.Workspace)/signing/lldb-mi.zip'
-      SigningCert: '8003'
-      SigningPluginSource: 'https://devdiv.pkgs.visualstudio.com/DefaultCollection/_packaging/MicroBuildToolset/nuget/v3/index.json'
-      SigningPluginVersion: 'latest'
+#   - task: ms-vseng.MicroBuildTasks.7973a23b-33e3-4b00-a7d9-c06d90f8297f.MicroBuildSignMacFiles@1
+#     inputs:
+#       SigningTarget: '$(Pipeline.Workspace)/signing/lldb-mi.zip'
+#       SigningCert: '8003'
+#       SigningPluginSource: 'https://devdiv.pkgs.visualstudio.com/DefaultCollection/_packaging/MicroBuildToolset/nuget/v3/index.json'
+#       SigningPluginVersion: 'latest'
 
-  - task: PublishPipelineArtifact@1
-    displayName: 'Publish LLDB-MI'
-    inputs:
-      targetPath: '$(Pipeline.Workspace)/signing/lldb-mi.zip'
-      artifactName: 'lldb-mi-signed'
+#   - task: PublishPipelineArtifact@1
+#     displayName: 'Publish LLDB-MI'
+#     inputs:
+#       targetPath: '$(Pipeline.Workspace)/signing/lldb-mi.zip'
+#       artifactName: 'lldb-mi-signed'
